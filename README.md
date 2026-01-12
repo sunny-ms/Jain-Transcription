@@ -11,7 +11,7 @@ Transcribe **PDF documents** (like Kailash Yatra) and **MP3 audio files** (lectu
 - 📄 **PDF Transcription**: Extract and translate text from Jain scriptures
 - 🎙️ **Audio Transcription**: Convert MP3 lectures to accurate transcripts with timestamps
 - 🇮🇳 **Language Support**: Hindi and Prakrit with proper Jain terminology
-- ⚡ **Powered by Google Gemini**: Uses the latest Gemini 2.5 Flash model for accurate results
+- ⚡ **Powered by LLM**: Uses the latest multi model for accurate results
 - 💾 **Download Results**: Export transcriptions as `.txt` files
 
 ## Quick Start
@@ -32,7 +32,7 @@ Transcribe **PDF documents** (like Kailash Yatra) and **MP3 audio files** (lectu
 
 3. Open your browser and go to `http://localhost:8501`
 
-4. In the sidebar, paste your **Gemini API Key** (get it [here](https://aistudio.google.com/))
+4. In the sidebar, paste your **API Key** (get it [here](https://aistudio.google.com/))
 
 5. Upload a PDF or MP3 file and click **प्रोसेस शुरू करें** to start transcription
 
