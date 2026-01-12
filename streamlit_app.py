@@ -68,21 +68,33 @@ if api_key:
                             elapsed += interval
                             progress_bar.progress(min(99, int((elapsed / timeout) * 100)))
 
-                        # 4. Final Jain Prompt
-                        jain_prompt = """
-                        Role: Expert Jain Literature Archivist.
-                        Task: Transcribe with 100% accuracy.
-                        Instructions:
-                        - Follow standard Jain Prakrit spellings for mantras (e.g., 'णमो अरिहंताणं').
-                        - Maintain pure Hindi/Sanskrit terms like 'विषापहार', 'ब्र०'.
-                        - If Audio: Provide verbatim transcript with timestamps [MM:SS].
-                        - If PDF: Maintain original page structure.
-                        """
+                        # 4. Select appropriate prompt based on file type
+                        if file_type == "Audio":
+                            prompt = """Role: You are an expert Jain Literature Archivist and Professional Transcriber.
+
+Task: Listen to the attached audio and provide a verbatim (word-for-word) Hindi transcription with specific attention to Jain terminology.
+
+Instructions:
+1. Mantra Accuracy: Follow standard Jain Prakrit spellings for all mantras. For example, use 'णमो अरिहंताणं' instead of 'नमो अरिहंतों', and 'णमो लोए सव्व साहूणं'. 
+2. Terminology: Ensure correct spelling for words like 'विषापहार', 'अतिशय', 'जिन शासन', 'तीर्थंकर', 'समवशरण', 'अरिहंत', 'सिद्ध', 'आचार्य', 'उपाध्याय', and 'साधु'.
+3. Purity of Language: Preserve the original mix of Sanskrit, Prakrit, and Hindi. Do not translate; only transcribe.
+
+Expected Output: A clean, well-structured document in Unicode Hindi (Devanagari)."""
+                        else:  # PDF
+                            prompt = """Role: You are an expert Hindi archivist.
+
+Task: Transcribe every word from the attached PDF with 100% accuracy.
+
+Instructions:
+1. Capture exact Devanagari characters including honorifics like 'ब्र०'.
+2. Do not summarize; provide a verbatim transcription.
+3. Maintain page structure by labeling each page clearly.
+4. Preserve special symbols like 'ॐ' and '卐'."""
 
                         # 5. Generate Response
                         response = client.models.generate_content(
                             model='models/gemini-2.5-flash',
-                            contents=[f_info, jain_prompt],
+                            contents=[f_info, prompt],
                             config={'temperature': 0.1}
                         )
 
