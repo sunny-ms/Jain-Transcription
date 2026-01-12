@@ -112,7 +112,7 @@ Instructions:
 
                         # 7. Display Results
                         st.subheader("निकाल गया टेक्स्ट (Result):")
-                        st.text_area("Final Transcript", text, height=500)
+                        st.text_area("Final Transcript->", text, height=500)
 
                         # Download Button
                         st.download_button(
