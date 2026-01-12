@@ -100,13 +100,13 @@ Instructions:
 
                         # 6. Extract text safely
                         text = None
-                        if hasattr(response, 'candidates'):
+                        if hasattr(response, 'text'):
+                            text = response.text
+                        elif hasattr(response, 'candidates'):
                             try:
                                 text = response.candidates[0].content
                             except Exception:
                                 text = str(response)
-                        elif hasattr(response, 'text'):
-                            text = response.text
                         else:
                             text = str(response)
 
