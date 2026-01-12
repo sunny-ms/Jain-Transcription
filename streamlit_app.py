@@ -22,8 +22,9 @@ st.markdown("इस ऐप के माध्यम से आप **PDF (कै
 # Sidebar for Configuration
 with st.sidebar:
     st.header("Settings")
-    api_key = st.text_input("Gemini API Key दर्ज करें", type="password")
-    st.info("API Key [Google AI Studio](https://aistudio.google.com/) से प्राप्त करें।")
+    api_key = st.text_input("API Key दर्ज करें", type="password")
+    st.info("Contact admin for API Key")
+    #st.info("API Key [Google AI Studio](https://aistudio.google.com/) से प्राप्त करें।")
 
 # --- Logic ---
 if api_key:
@@ -45,7 +46,7 @@ if api_key:
 
             if st.button(f"प्रोसेस शुरू करें ({file_type})"):
                 try:
-                    with st.spinner('Google Gemini फाइल को प्रोसेस कर रहा है... इसमें 1-2 मिनट लग सकते हैं।'):
+                    with st.spinner('App फाइल को प्रोसेस कर रहा है... इसमें 1-2 मिनट लग सकते हैं।'):
                         # 1. MIME Type determine
                         m_type = "application/pdf" if file_type == "PDF" else "audio/mpeg"
 
