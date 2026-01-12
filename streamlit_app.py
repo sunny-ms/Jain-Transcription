@@ -1,53 +1,116 @@
 import streamlit as st
-from openai import OpenAI
+import time
 
-# Show title and description.
-st.title("📄 Document question answering")
-st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-)
+# Try multiple import paths so the app works with different GenAI client packages
+try:
+    import genai
+except Exception:
+    try:
+        import google.genai as genai
+    except Exception:
+        try:
+            import google.generativeai as genai
+        except Exception:
+            genai = None
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
+# --- UI Setup ---
+st.set_page_config(page_title="Jain Pathshala AI", page_icon="🙏", layout="wide")
+
+st.title("🙏 जैन धर्मग्रंथ एवं प्रवचन AI")
+st.markdown("इस ऐप के माध्यम से आप **PDF (कैलाश यात्रा आदि)** और **MP3 (प्रवचन)** का सटीक शुद्ध हिंदी एवं प्राकृत अनुवाद कर सकते हैं।")
+
+# Sidebar for Configuration
+with st.sidebar:
+    st.header("Settings")
+    api_key = st.text_input("Gemini API Key दर्ज करें", type="password")
+    st.info("API Key [Google AI Studio](https://aistudio.google.com/) से प्राप्त करें।")
+
+# --- Logic ---
+if api_key:
+    if genai is None:
+        st.error("Google GenAI क्लाइंट इंस्टॉल नहीं मिला। कृपया चलाएँ: `pip install google-genai` या `pip install google-generativeai` और ऐप को फिर से चालू करें।")
+    else:
+        try:
+            client = genai.Client(api_key=api_key)
+        except Exception as e:
+            st.error(f"GenAI क्लाइंट बनाने में त्रुटि: {e}")
+            st.stop()
+
+        # File Uploader
+        uploaded_file = st.file_uploader("अपनी फाइल अपलोड करें (PDF या MP3)", type=['pdf', 'mp3'])
+
+        if uploaded_file:
+            file_type = "PDF" if uploaded_file.name.endswith(".pdf") else "Audio"
+            st.success(f"{file_type} फाइल तैयार है: {uploaded_file.name}")
+
+            if st.button(f"प्रोसेस शुरू करें ({file_type})"):
+                try:
+                    with st.spinner('Google Gemini फाइल को प्रोसेस कर रहा है... इसमें 1-2 मिनट लग सकते हैं।'):
+                        # 1. MIME Type determine
+                        m_type = "application/pdf" if file_type == "PDF" else "audio/mpeg"
+
+                        # 2. Upload to Google GenAI
+                        sample_file = client.files.upload(file=uploaded_file, config={'mime_type': m_type})
+
+                        # 3. Wait for ACTIVE state (with timeout)
+                        progress_bar = st.progress(0)
+                        timeout = 120  # seconds
+                        elapsed = 0
+                        interval = 2
+                        while elapsed < timeout:
+                            f_info = client.files.get(name=sample_file.name)
+                            # state could be object or string depending on client
+                            state = getattr(getattr(f_info, 'state', None), 'name', None) or getattr(f_info, 'state', None)
+                            if str(state).upper() == 'ACTIVE':
+                                progress_bar.progress(100)
+                                break
+                            time.sleep(interval)
+                            elapsed += interval
+                            progress_bar.progress(min(99, int((elapsed / timeout) * 100)))
+
+                        # 4. Final Jain Prompt
+                        jain_prompt = """
+                        Role: Expert Jain Literature Archivist.
+                        Task: Transcribe with 100% accuracy.
+                        Instructions:
+                        - Follow standard Jain Prakrit spellings for mantras (e.g., 'णमो अरिहंताणं').
+                        - Maintain pure Hindi/Sanskrit terms like 'विषापहार', 'ब्र०'.
+                        - If Audio: Provide verbatim transcript with timestamps [MM:SS].
+                        - If PDF: Maintain original page structure.
+                        """
+
+                        # 5. Generate Response
+                        response = client.models.generate_content(
+                            model='models/gemini-2.5-flash',
+                            contents=[f_info, jain_prompt],
+                            config={'temperature': 0.1}
+                        )
+
+                        # 6. Extract text safely
+                        text = None
+                        if hasattr(response, 'candidates'):
+                            try:
+                                text = response.candidates[0].content
+                            except Exception:
+                                text = str(response)
+                        elif hasattr(response, 'text'):
+                            text = response.text
+                        else:
+                            text = str(response)
+
+                        # 7. Display Results
+                        st.subheader("निकाल गया टेक्स्ट (Result):")
+                        st.text_area("Final Transcript", text, height=500)
+
+                        # Download Button
+                        st.download_button(
+                            label="Result डाउनलोड करें (.txt)",
+                            data=text,
+                            file_name=f"Jain_Output_{int(time.time())}.txt",
+                            mime="text/plain"
+                        )
+
+                except Exception as e:
+                    st.error(f"त्रुटि हुई: {e}")
 else:
-
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
-
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
-    )
-
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
-
-    if uploaded_file and question:
-
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
-        ]
-
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
-        )
-
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+    st.warning("ऐप चलाने के लिए कृपया साइडबार में API Key डालें।")
