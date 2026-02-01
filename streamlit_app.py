@@ -1,5 +1,7 @@
 import streamlit as st
 import time
+import io
+from docx import Document
 
 # Try multiple import paths so the app works with different GenAI client packages
 try:
@@ -115,13 +117,32 @@ Instructions:
                         st.subheader("निकाल गया टेक्स्ट (Result):")
                         st.text_area("Final Transcript->", text, height=500)
 
-                        # Download Button
-                        st.download_button(
-                            label="Result डाउनलोड करें (.txt)",
-                            data=text,
-                            file_name=f"Jain_Output_{int(time.time())}.txt",
-                            mime="text/plain"
-                        )
+                        # Download Options
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Download as TXT
+                            st.download_button(
+                                label="📄 Text (.txt) डाउनलोड करें",
+                                data=text,
+                                file_name=f"Jain_Output_{int(time.time())}.txt",
+                                mime="text/plain"
+                            )
+                        
+                        with col2:
+                            # Download as DOCX
+                            doc = Document()
+                            doc.add_paragraph(text)
+                            docx_buffer = io.BytesIO()
+                            doc.save(docx_buffer)
+                            docx_buffer.seek(0)
+                            
+                            st.download_button(
+                                label="📋 Word (.docx) डाउनलोड करें",
+                                data=docx_buffer.getvalue(),
+                                file_name=f"Jain_Output_{int(time.time())}.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            )
 
                 except Exception as e:
                     st.error(f"त्रुटि हुई: {e}")
