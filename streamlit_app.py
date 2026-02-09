@@ -92,7 +92,10 @@ Instructions:
 1. Capture exact Devanagari characters including honorifics like 'ब्र०'.
 2. Do not summarize; provide a verbatim transcription.
 3. Maintain page structure by labeling each page clearly.
-4. Preserve special symbols like 'ॐ' and '卐'."""
+4. Preserve special symbols like 'ॐ' and '卐'.
+5. REPETITION CHECK: If you find yourself repeating the same word or phrase more than 3 times in a row, stop immediately. Re-examine the source visual data and correct the sequence. Do not hallucinate or "fill in" list items based on previous patterns; every entry must be verified individually.
+6. LAYOUT HANDLING: Transcribe dense or complex lists as a structured numbered or bulleted list. If a sentence or entry begins on one page and ends on the next (page break), maintain the continuity of the text exactly as it appears without breaking the flow or losing context.
+7. OUTPUT LIMIT & FORMATTING: To maintain 100% accuracy, process only a limited segment (e.g., 5 pages) at a time. For pages containing dense indices, directories, or catalogs, use a table format or a clear numbered list to ensure readability and structural integrity."""
 
                         # 5. Generate Response
                         response = client.models.generate_content(
