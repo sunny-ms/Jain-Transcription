@@ -93,9 +93,9 @@ Instructions:
 2. Do not summarize; provide a verbatim transcription.
 3. Maintain page structure by labeling each page clearly.
 4. Preserve special symbols like 'ॐ' and '卐'.
-5. REPETITION CHECK: If you find yourself repeating the same word or phrase more than 3 times in a row, stop immediately. Re-examine the source visual data and correct the sequence. Do not hallucinate or "fill in" list items based on previous patterns; every entry must be verified individually.
-6. LAYOUT HANDLING: Transcribe dense or complex lists as a structured numbered or bulleted list. If a sentence or entry begins on one page and ends on the next (page break), maintain the continuity of the text exactly as it appears without breaking the flow or losing context.
-7. OUTPUT LIMIT & FORMATTING: To maintain 100% accuracy, process only a limited segment (e.g., 5 pages) at a time. For pages containing dense indices, directories, or catalogs, use a table format or a clear numbered list to ensure readability and structural integrity."""
+5. REPETITION CHECK & PATTERN BREAKING: If you find yourself repeating the same word, phrase, or numbering sequence more than 3 times, STOP. This is a sign of a hallucination loop. Re-scan the page specifically for changes in text. Do not assume a list follows a uniform pattern; verify every single character against the visual source.
+6. MULTI-COLUMN LAYOUT HANDLING: If a page contains multiple columns (like an index or bibliography), transcribe them column-by-column or row-by-row in a clear, structured list. Do not read across the columns as if they are a single sentence. If an entry is split by a page break, merge it into a single coherent line in your transcription to maintain context.
+7. DENSE DATA FORMATTING: For pages containing dense indices (like 'ग्रन्थाक्रम'), prioritize a Numbered List format. Use the format [Number]. [Title] ([Page/Reference]). If the text becomes too dense to follow in a standard paragraph, force a new line for every new entry to prevent the model's logic from "stacking" words and looping."""
 
                         # 5. Generate Response
                         response = client.models.generate_content(
