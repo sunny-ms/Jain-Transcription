@@ -46,6 +46,16 @@ if api_key:
             file_type = "PDF" if uploaded_file.name.endswith(".pdf") else "Audio"
             st.success(f"{file_type} फाइल तैयार है: {uploaded_file.name}")
 
+            # Page range input for PDF
+            starting_page = None
+            ending_page = None
+            if file_type == "PDF":
+                col1, col2 = st.columns(2)
+                with col1:
+                    starting_page = st.number_input("शुरुआती पृष्ठ (Starting Page)", min_value=1, value=None, step=1, placeholder="वैकल्पिक")
+                with col2:
+                    ending_page = st.number_input("समाप्त पृष्ठ (Ending Page)", min_value=1, value=None, step=1, placeholder="वैकल्पिक")
+
             if st.button(f"प्रोसेस शुरू करें ({file_type})"):
                 try:
                     with st.spinner('App फाइल को प्रोसेस कर रहा है... इसमें 1-2 मिनट लग सकते हैं।'):
@@ -96,6 +106,9 @@ Instructions:
 5. REPETITION CHECK & PATTERN BREAKING: If you find yourself repeating the same word, phrase, or numbering sequence more than 3 times, STOP. This is a sign of a hallucination loop. Re-scan the page specifically for changes in text. Do not assume a list follows a uniform pattern; verify every single character against the visual source.
 6. MULTI-COLUMN LAYOUT HANDLING: If a page contains multiple columns (like an index or bibliography), transcribe them column-by-column or row-by-row in a clear, structured list. Do not read across the columns as if they are a single sentence. If an entry is split by a page break, merge it into a single coherent line in your transcription to maintain context.
 7. DENSE DATA FORMATTING: For pages containing dense indices (like 'ग्रन्थाक्रम'), prioritize a Numbered List format. Use the format [Number]. [Title] ([Page/Reference]). If the text becomes too dense to follow in a standard paragraph, force a new line for every new entry to prevent the model's logic from "stacking" words and looping."""
+                            # Add 8th instruction if both page numbers are provided
+                            if starting_page is not None and ending_page is not None:
+                                prompt += f"\n8. PAGE RANGE RESTRICTION: Process only pages {starting_page} to {ending_page}. Ignore all content outside this page range."
 
                         # 5. Generate Response
                         response = client.models.generate_content(
