@@ -122,247 +122,367 @@ if api_key:
             if k not in st.session_state:
                 st.session_state[k] = v
 
-        # File Uploader
-        uploaded_file = st.file_uploader("अपनी फाइल अपलोड करें (PDF या MP3)", type=['pdf', 'mp3'])
+        # --- Helper: process a single chunk via Gemini ---
+        def process_chunk(client, chunk_bytes, idx, total, is_pdf, temp_dir):
+            """Upload a chunk to Gemini, get transcription, save to disk. Returns text."""
+            if is_pdf:
+                upload_source = io.BytesIO(chunk_bytes)
+                m_type = "application/pdf"
+                prompt = PDF_PROMPT + f"\n8. CHUNK INFO: This is part {idx + 1} of {total}. Transcribe all content in this chunk."
+            else:
+                upload_source = io.BytesIO(chunk_bytes)
+                m_type = "audio/mpeg"
+                prompt = AUDIO_PROMPT
 
-        if uploaded_file:
-            file_type = "PDF" if uploaded_file.name.endswith(".pdf") else "Audio"
-            st.success(f"{file_type} फाइल तैयार है: {uploaded_file.name}")
+            st.write("Gemini पर अपलोड हो रहा है...")
+            sample_file = client.files.upload(file=upload_source, config={'mime_type': m_type})
 
-            # --- Process button ---
-            if st.button(f"प्रोसेस शुरू करें ({file_type})"):
-                # Cleanup previous temp files
-                for p in st.session_state.get('chunk_temp_files', []):
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
-                td = st.session_state.get('session_temp_dir')
-                if td and os.path.isdir(td):
-                    try:
-                        os.rmdir(td)
-                    except OSError:
-                        pass
+            st.write("फाइल तैयार होने का इंतज़ार...")
+            elapsed = 0
+            while elapsed < 120:
+                f_info = client.files.get(name=sample_file.name)
+                state = getattr(getattr(f_info, 'state', None), 'name', None) or getattr(f_info, 'state', None)
+                if str(state).upper() == 'ACTIVE':
+                    break
+                time.sleep(2)
+                elapsed += 2
 
-                st.session_state.update({
-                    'processing_active': True,
-                    'chunk_results': [],
-                    'current_chunk_index': 0,
-                    'processing_error': None,
-                    'processing_complete': False,
-                    'chunk_temp_files': [],
-                })
+            st.write("Gemini से उत्तर प्राप्त हो रहा है...")
+            max_retries = 3
+            last_err = None
+            response = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = client.models.generate_content(
+                        model='models/gemini-2.5-flash',
+                        contents=[f_info, prompt],
+                        config={'temperature': 0.1}
+                    )
+                    break
+                except Exception as gen_err:
+                    last_err = gen_err
+                    if attempt < max_retries:
+                        wait = attempt * 30
+                        st.write(f"प्रयास {attempt} विफल ({gen_err}), {wait}s बाद पुनः प्रयास...")
+                        time.sleep(wait)
+            if response is None:
+                raise Exception(f"3 प्रयासों के बाद भी विफल: {last_err}")
 
-                if file_type == "PDF":
-                    pdf_bytes = uploaded_file.read()
-                    st.session_state['pdf_bytes'] = pdf_bytes
-                    st.session_state['is_pdf'] = True
-                    st.session_state['session_temp_dir'] = tempfile.mkdtemp(prefix='jain_')
-                    chunks = split_pdf(pdf_bytes, chunk_size)
-                    st.session_state['chunk_bytes'] = chunks
-                    st.session_state['chunk_count'] = len(chunks)
-                    st.session_state['chunk_results'] = [None] * len(chunks)
-                else:
-                    st.session_state['audio_bytes'] = uploaded_file.read()
-                    st.session_state['is_pdf'] = False
-                    st.session_state['chunk_count'] = 1
-                    st.session_state['chunk_results'] = [None]
+            if hasattr(response, 'text'):
+                text = response.text
+            elif hasattr(response, 'candidates'):
+                try:
+                    text = response.candidates[0].content
+                except Exception:
+                    text = str(response)
+            else:
+                text = str(response)
 
-                st.rerun()
+            if temp_dir:
+                txt_path = os.path.join(temp_dir, f"chunk_{idx:03d}.txt")
+                with open(txt_path, 'w', encoding='utf-8') as tf:
+                    tf.write(text)
 
-        # --- Incremental results display (shown before processing so prior chunks are visible) ---
-        done = [r for r in st.session_state.chunk_results if r is not None]
-        if done:
-            st.subheader("निकाल गया टेक्स्ट (Result):")
-            for i, result in enumerate(st.session_state.chunk_results):
-                if result is not None:
-                    label = f"भाग {i + 1}" if st.session_state.chunk_count > 1 else "परिणाम"
-                    with st.expander(label, expanded=(i == len(done) - 1)):
-                        st.text_area("", result, height=300,
-                                     key=f"chunk_out_{i}", label_visibility="collapsed")
+            try:
+                client.files.delete(name=sample_file.name)
+            except Exception:
+                pass
 
-        # --- Error display with resume + partial download options ---
-        if st.session_state.processing_error:
-            failed_idx = st.session_state.current_chunk_index
-            st.error(f"भाग {failed_idx + 1} पर त्रुटि: {st.session_state.processing_error}")
+            return text
 
-            col_resume, col_skip, col_dl = st.columns(3)
+        tab1, tab2 = st.tabs(["📤 नई फाइल अपलोड करें", "📂 फोल्डर से पुनः शुरू करें"])
 
-            with col_resume:
-                if st.button(f"भाग {failed_idx + 1} से पुनः शुरू करें"):
-                    st.session_state['processing_error'] = None
-                    st.session_state['processing_active'] = True
-                    st.rerun()
+        # ====== TAB 1: Upload New ======
+        with tab1:
+            uploaded_file = st.file_uploader("अपनी फाइल अपलोड करें (PDF या MP3)", type=['pdf', 'mp3'])
 
-            with col_skip:
-                if st.button(f"भाग {failed_idx + 1} छोड़ें, आगे बढ़ें"):
-                    st.session_state['processing_error'] = None
-                    st.session_state['chunk_results'][failed_idx] = "[यह भाग छोड़ा गया (skipped)]"
-                    st.session_state['current_chunk_index'] = failed_idx + 1
-                    if failed_idx + 1 >= st.session_state.chunk_count:
-                        st.session_state['processing_complete'] = True
+            if uploaded_file:
+                file_type = "PDF" if uploaded_file.name.endswith(".pdf") else "Audio"
+                st.success(f"{file_type} फाइल तैयार है: {uploaded_file.name}")
+
+                if st.button(f"प्रोसेस शुरू करें ({file_type})"):
+                    # Cleanup previous temp files
+                    for p in st.session_state.get('chunk_temp_files', []):
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+                    td = st.session_state.get('session_temp_dir')
+                    if td and os.path.isdir(td):
+                        try:
+                            os.rmdir(td)
+                        except OSError:
+                            pass
+
+                    st.session_state.update({
+                        'processing_active': True,
+                        'chunk_results': [],
+                        'current_chunk_index': 0,
+                        'processing_error': None,
+                        'processing_complete': False,
+                        'chunk_temp_files': [],
+                    })
+
+                    if file_type == "PDF":
+                        pdf_bytes = uploaded_file.read()
+                        st.session_state['pdf_bytes'] = pdf_bytes
+                        st.session_state['is_pdf'] = True
+                        st.session_state['session_temp_dir'] = tempfile.mkdtemp(prefix='jain_')
+                        chunks = split_pdf(pdf_bytes, chunk_size)
+                        st.session_state['chunk_bytes'] = chunks
+                        st.session_state['chunk_count'] = len(chunks)
+                        st.session_state['chunk_results'] = [None] * len(chunks)
+                        # Save PDF chunks to disk
+                        for ci, cb in enumerate(chunks):
+                            pdf_path = os.path.join(st.session_state['session_temp_dir'], f"chunk_{ci:03d}.pdf")
+                            with open(pdf_path, 'wb') as pf:
+                                pf.write(cb)
                     else:
-                        st.session_state['processing_active'] = True
+                        st.session_state['audio_bytes'] = uploaded_file.read()
+                        st.session_state['is_pdf'] = False
+                        st.session_state['chunk_count'] = 1
+                        st.session_state['chunk_results'] = [None]
+
                     st.rerun()
 
-            with col_dl:
-                # Download what has been processed so far
-                partial_results = [r for r in st.session_state.chunk_results if r is not None]
-                if partial_results:
-                    partial_text = "\n\n---\n\n".join(partial_results)
+            # Show folder path if processing
+            if st.session_state.get('session_temp_dir'):
+                st.info(f"फाइलें यहाँ सहेजी गई हैं: {st.session_state['session_temp_dir']}")
+
+            # --- Incremental results display ---
+            done = [r for r in st.session_state.chunk_results if r is not None]
+            if done:
+                st.subheader("निकाल गया टेक्स्ट (Result):")
+                for i, result in enumerate(st.session_state.chunk_results):
+                    if result is not None:
+                        label = f"भाग {i + 1}" if st.session_state.chunk_count > 1 else "परिणाम"
+                        with st.expander(label, expanded=(i == len(done) - 1)):
+                            st.text_area("", result, height=300,
+                                         key=f"chunk_out_{i}", label_visibility="collapsed")
+
+            # --- Error display with resume + partial download ---
+            if st.session_state.processing_error:
+                failed_idx = st.session_state.current_chunk_index
+                st.error(f"भाग {failed_idx + 1} पर त्रुटि: {st.session_state.processing_error}")
+
+                col_resume, col_skip, col_dl = st.columns(3)
+
+                with col_resume:
+                    if st.button(f"भाग {failed_idx + 1} से पुनः शुरू करें"):
+                        st.session_state['processing_error'] = None
+                        st.session_state['processing_active'] = True
+                        st.rerun()
+
+                with col_skip:
+                    if st.button(f"भाग {failed_idx + 1} छोड़ें, आगे बढ़ें"):
+                        st.session_state['processing_error'] = None
+                        st.session_state['chunk_results'][failed_idx] = "[यह भाग छोड़ा गया (skipped)]"
+                        st.session_state['current_chunk_index'] = failed_idx + 1
+                        if failed_idx + 1 >= st.session_state.chunk_count:
+                            st.session_state['processing_complete'] = True
+                        else:
+                            st.session_state['processing_active'] = True
+                        st.rerun()
+
+                with col_dl:
+                    partial_results = [r for r in st.session_state.chunk_results if r is not None]
+                    if partial_results:
+                        partial_text = "\n\n---\n\n".join(partial_results)
+                        st.download_button(
+                            label="📄 अब तक का परिणाम डाउनलोड करें",
+                            data=partial_text,
+                            file_name=f"Jain_Partial_{int(time.time())}.txt",
+                            mime="text/plain"
+                        )
+
+                log_path = os.path.join(st.session_state['session_temp_dir'], "error_log.txt") \
+                    if st.session_state['session_temp_dir'] else None
+                if log_path and os.path.exists(log_path):
+                    with open(log_path, 'r', encoding='utf-8') as lf:
+                        log_content = lf.read()
                     st.download_button(
-                        label="📄 अब तक का परिणाम डाउनलोड करें",
-                        data=partial_text,
-                        file_name=f"Jain_Partial_{int(time.time())}.txt",
+                        label="📋 Error Log डाउनलोड करें",
+                        data=log_content,
+                        file_name=f"Jain_ErrorLog_{int(time.time())}.txt",
                         mime="text/plain"
                     )
 
-            # Error log download
-            log_path = os.path.join(st.session_state['session_temp_dir'], "error_log.txt") \
-                if st.session_state['session_temp_dir'] else None
-            if log_path and os.path.exists(log_path):
-                with open(log_path, 'r', encoding='utf-8') as lf:
-                    log_content = lf.read()
-                st.download_button(
-                    label="📋 Error Log डाउनलोड करें",
-                    data=log_content,
-                    file_name=f"Jain_ErrorLog_{int(time.time())}.txt",
-                    mime="text/plain"
-                )
+            # --- Processing loop: one chunk per rerun ---
+            if st.session_state.processing_active:
+                idx = st.session_state.current_chunk_index
+                total = st.session_state.chunk_count
 
-        # --- Processing loop: one chunk per rerun ---
-        if st.session_state.processing_active:
-            idx = st.session_state.current_chunk_index
-            total = st.session_state.chunk_count
+                st.progress(idx / total if total > 0 else 0,
+                            text=f"प्रोसेसिंग: {idx}/{total} भाग पूर्ण")
 
-            st.progress(idx / total if total > 0 else 0,
-                        text=f"प्रोसेसिंग: {idx}/{total} भाग पूर्ण")
-
-            if idx < total:
-                with st.status(f"भाग {idx + 1}/{total} प्रोसेस हो रहा है...", expanded=True):
-                    try:
-                        if st.session_state.is_pdf:
-                            upload_source = io.BytesIO(st.session_state['chunk_bytes'][idx])
-                            m_type = "application/pdf"
-                            prompt = PDF_PROMPT + f"\n8. CHUNK INFO: This is part {idx + 1} of {total}. Transcribe all content in this chunk."
-                        else:
-                            upload_source = io.BytesIO(st.session_state['audio_bytes'])
-                            m_type = "audio/mpeg"
-                            prompt = AUDIO_PROMPT
-
-                        st.write("Gemini पर अपलोड हो रहा है...")
-                        sample_file = client.files.upload(file=upload_source, config={'mime_type': m_type})
-
-                        # Poll for ACTIVE state (120s timeout)
-                        st.write("फाइल तैयार होने का इंतज़ार...")
-                        elapsed = 0
-                        while elapsed < 120:
-                            f_info = client.files.get(name=sample_file.name)
-                            state = getattr(getattr(f_info, 'state', None), 'name', None) or getattr(f_info, 'state', None)
-                            if str(state).upper() == 'ACTIVE':
-                                break
-                            time.sleep(2)
-                            elapsed += 2
-
-                        st.write("Gemini से उत्तर प्राप्त हो रहा है...")
-                        max_retries = 3
-                        last_err = None
-                        last_trace = None
-                        response = None
-                        for attempt in range(1, max_retries + 1):
-                            try:
-                                response = client.models.generate_content(
-                                    model='models/gemini-2.5-flash',
-                                    contents=[f_info, prompt],
-                                    config={'temperature': 0.1}
-                                )
-                                break
-                            except Exception as gen_err:
-                                last_err = gen_err
-                                last_trace = traceback.format_exc()
-                                if attempt < max_retries:
-                                    wait = attempt * 30  # 30s, 60s — gives 503 time to recover
-                                    st.write(f"प्रयास {attempt} विफल ({gen_err}), {wait}s बाद पुनः प्रयास...")
-                                    time.sleep(wait)
-                        if response is None:
-                            raise Exception(f"3 प्रयासों के बाद भी विफल: {last_err}")
-
-                        # Extract text safely
-                        if hasattr(response, 'text'):
-                            text = response.text
-                        elif hasattr(response, 'candidates'):
-                            try:
-                                text = response.candidates[0].content
-                            except Exception:
-                                text = str(response)
-                        else:
-                            text = str(response)
-
-                        # Save to temp file
-                        if st.session_state['session_temp_dir']:
-                            temp_path = os.path.join(
-                                st.session_state['session_temp_dir'],
-                                f"chunk_{idx:03d}.txt"
-                            )
-                            with open(temp_path, 'w', encoding='utf-8') as tf:
-                                tf.write(text)
-                            st.session_state['chunk_temp_files'].append(temp_path)
-
-                        st.session_state['chunk_results'][idx] = text
-                        st.session_state['current_chunk_index'] = idx + 1
-
-                        # Clean up Gemini file immediately after use
+                if idx < total:
+                    with st.status(f"भाग {idx + 1}/{total} प्रोसेस हो रहा है...", expanded=True):
                         try:
-                            client.files.delete(name=sample_file.name)
-                        except Exception:
-                            pass
+                            chunk_data = st.session_state['chunk_bytes'][idx] if st.session_state.is_pdf else st.session_state['audio_bytes']
+                            text = process_chunk(client, chunk_data, idx, total,
+                                                 st.session_state.is_pdf, st.session_state['session_temp_dir'])
 
-                    except Exception as e:
-                        full_trace = traceback.format_exc()
-                        log_error(st.session_state['session_temp_dir'], idx, str(e), full_trace)
-                        st.session_state['processing_error'] = str(e)
+                            st.session_state['chunk_results'][idx] = text
+                            st.session_state['current_chunk_index'] = idx + 1
+
+                        except Exception as e:
+                            full_trace = traceback.format_exc()
+                            log_error(st.session_state['session_temp_dir'], idx, str(e), full_trace)
+                            st.session_state['processing_error'] = str(e)
+                            st.session_state['processing_active'] = False
+                            st.rerun()
+
+                    if st.session_state['current_chunk_index'] >= total:
                         st.session_state['processing_active'] = False
-                        st.rerun()
+                        st.session_state['processing_complete'] = True
 
-                if st.session_state['current_chunk_index'] >= total:
-                    st.session_state['processing_active'] = False
-                    st.session_state['processing_complete'] = True
+                    st.rerun()
 
-                st.rerun()  # immediately process next chunk
-
-        # --- Final combined download (only when all chunks done) ---
-        if st.session_state.processing_complete:
-            full_text = "\n\n---\n\n".join(
-                r for r in st.session_state.chunk_results if r is not None
-            )
-
-            if st.session_state.chunk_count > 1:
-                st.subheader("पूर्ण परिणाम (Complete Result):")
-                st.text_area("Final Transcript->", full_text, height=500)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label="📄 Text (.txt) डाउनलोड करें",
-                    data=full_text,
-                    file_name=f"Jain_Output_{int(time.time())}.txt",
-                    mime="text/plain"
+            # --- Final combined download ---
+            if st.session_state.processing_complete:
+                full_text = "\n\n---\n\n".join(
+                    r for r in st.session_state.chunk_results if r is not None
                 )
-            with col2:
-                doc = Document()
-                for r in st.session_state.chunk_results:
-                    if r:
-                        doc.add_paragraph(r)
-                        doc.add_paragraph()
-                docx_buffer = io.BytesIO()
-                doc.save(docx_buffer)
-                docx_buffer.seek(0)
-                st.download_button(
-                    label="📋 Word (.docx) डाउनलोड करें",
-                    data=docx_buffer.getvalue(),
-                    file_name=f"Jain_Output_{int(time.time())}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+
+                if st.session_state.chunk_count > 1:
+                    st.subheader("पूर्ण परिणाम (Complete Result):")
+                    st.text_area("Final Transcript->", full_text, height=500)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="📄 Text (.txt) डाउनलोड करें",
+                        data=full_text,
+                        file_name=f"Jain_Output_{int(time.time())}.txt",
+                        mime="text/plain"
+                    )
+                with col2:
+                    doc = Document()
+                    for r in st.session_state.chunk_results:
+                        if r:
+                            doc.add_paragraph(r)
+                            doc.add_paragraph()
+                    docx_buffer = io.BytesIO()
+                    doc.save(docx_buffer)
+                    docx_buffer.seek(0)
+                    st.download_button(
+                        label="📋 Word (.docx) डाउनलोड करें",
+                        data=docx_buffer.getvalue(),
+                        file_name=f"Jain_Output_{int(time.time())}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+
+        # ====== TAB 2: Resume from Folder ======
+        with tab2:
+            folder_path = st.text_input("फोल्डर पथ दर्ज करें (Folder Path)", placeholder="C:\\Users\\...\\jain_XXXX")
+
+            if folder_path and os.path.isdir(folder_path):
+                # Scan for chunk PDFs and TXTs
+                pdf_files = sorted([f for f in os.listdir(folder_path) if f.startswith('chunk_') and f.endswith('.pdf')])
+                txt_files = {f.replace('.txt', ''): f for f in os.listdir(folder_path) if f.startswith('chunk_') and f.endswith('.txt')}
+
+                if not pdf_files:
+                    st.warning("इस फोल्डर में कोई PDF chunk नहीं मिला।")
+                else:
+                    st.success(f"{len(pdf_files)} PDF chunks मिले, {len(txt_files)} पहले से प्रोसेस हो चुके हैं।")
+
+                    # Initialize regen state
+                    if 'regen_active' not in st.session_state:
+                        st.session_state['regen_active'] = False
+                    if 'regen_index' not in st.session_state:
+                        st.session_state['regen_index'] = -1
+
+                    for pdf_file in pdf_files:
+                        chunk_stem = pdf_file.replace('.pdf', '')  # e.g. chunk_000
+                        idx = int(chunk_stem.split('_')[1])
+                        has_output = chunk_stem in txt_files
+
+                        col_name, col_status, col_action, col_view = st.columns([3, 2, 1, 2])
+
+                        with col_name:
+                            st.write(f"**{chunk_stem}**")
+
+                        with col_status:
+                            if has_output:
+                                st.write(":white_check_mark: प्रोसेस हो चुका")
+                            else:
+                                st.write(":x: बाकी है")
+
+                        with col_action:
+                            if st.button("🔄", key=f"regen_{idx}", help=f"भाग {idx + 1} पुनः प्रोसेस करें"):
+                                st.session_state['regen_active'] = True
+                                st.session_state['regen_index'] = idx
+                                st.session_state['regen_folder'] = folder_path
+                                st.rerun()
+
+                        with col_view:
+                            if has_output:
+                                txt_path = os.path.join(folder_path, txt_files[chunk_stem])
+                                with open(txt_path, 'r', encoding='utf-8') as rf:
+                                    content = rf.read()
+                                with st.popover("👁 देखें"):
+                                    st.text_area("", content, height=300, key=f"view_{idx}", label_visibility="collapsed")
+
+                    st.divider()
+
+                    # Download all completed outputs combined
+                    all_texts = []
+                    for pdf_file in pdf_files:
+                        chunk_stem = pdf_file.replace('.pdf', '')
+                        if chunk_stem in txt_files:
+                            txt_path = os.path.join(folder_path, txt_files[chunk_stem])
+                            with open(txt_path, 'r', encoding='utf-8') as rf:
+                                all_texts.append(rf.read())
+
+                    if all_texts:
+                        combined = "\n\n---\n\n".join(all_texts)
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.download_button(
+                                label="📄 सभी परिणाम Text (.txt) डाउनलोड करें",
+                                data=combined,
+                                file_name=f"Jain_Combined_{int(time.time())}.txt",
+                                mime="text/plain",
+                                key="tab2_dl_txt"
+                            )
+                        with col2:
+                            doc = Document()
+                            for t in all_texts:
+                                doc.add_paragraph(t)
+                                doc.add_paragraph()
+                            docx_buffer = io.BytesIO()
+                            doc.save(docx_buffer)
+                            docx_buffer.seek(0)
+                            st.download_button(
+                                label="📋 सभी परिणाम Word (.docx) डाउनलोड करें",
+                                data=docx_buffer.getvalue(),
+                                file_name=f"Jain_Combined_{int(time.time())}.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key="tab2_dl_docx"
+                            )
+
+                    # --- Regenerate processing ---
+                    if st.session_state.get('regen_active'):
+                        regen_idx = st.session_state['regen_index']
+                        regen_folder = st.session_state['regen_folder']
+                        pdf_path = os.path.join(regen_folder, f"chunk_{regen_idx:03d}.pdf")
+
+                        with st.status(f"भाग {regen_idx + 1} पुनः प्रोसेस हो रहा है...", expanded=True):
+                            try:
+                                with open(pdf_path, 'rb') as pf:
+                                    chunk_data = pf.read()
+                                text = process_chunk(client, chunk_data, regen_idx, len(pdf_files),
+                                                     True, regen_folder)
+                                st.session_state['regen_active'] = False
+                                st.session_state['regen_index'] = -1
+                                st.success(f"भाग {regen_idx + 1} सफलतापूर्वक पुनः प्रोसेस हो गया!")
+                                st.rerun()
+                            except Exception as e:
+                                st.session_state['regen_active'] = False
+                                st.error(f"त्रुटि: {e}")
+
+            elif folder_path:
+                st.error("यह फोल्डर मौजूद नहीं है। कृपया सही पथ दर्ज करें।")
 
 else:
     st.warning("ऐप चलाने के लिए कृपया साइडबार में API Key डालें।")
