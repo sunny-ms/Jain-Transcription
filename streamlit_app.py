@@ -191,7 +191,7 @@ if api_key:
 
             return text
 
-        tab1, tab2, tab3 = st.tabs(["📤 नई फाइल अपलोड करें", "📂 फोल्डर से पुनः शुरू करें", "🎬 YouTube"])
+        tab1, tab2, tab3 = st.tabs(["📤 नई फाइल अपलोड करें", "📂 फोल्डर से पुनः शुरू करें", "🎧 ऑडियो / YouTube"])
 
         # ====== TAB 1: Upload New ======
         with tab1:
@@ -249,6 +249,9 @@ if api_key:
             # Show folder path if processing
             if st.session_state.get('session_temp_dir'):
                 st.info(f"फाइलें यहाँ सहेजी गई हैं: {st.session_state['session_temp_dir']}")
+                if st.button("📂 इस फोल्डर को 'फोल्डर से पुनः शुरू करें' टैब में खोलें", key="tab1_to_tab2"):
+                    st.session_state['tab2_folder_path'] = st.session_state['session_temp_dir']
+                    st.rerun()
 
             # --- Incremental results display ---
             done = [r for r in st.session_state.chunk_results if r is not None]
@@ -260,6 +263,33 @@ if api_key:
                         with st.expander(label, expanded=(i == len(done) - 1)):
                             st.text_area("", result, height=300,
                                          key=f"chunk_out_{i}", label_visibility="collapsed")
+                            dl_col1, dl_col2 = st.columns(2)
+                            with dl_col1:
+                                # Download original chunk
+                                if st.session_state.is_pdf and i < len(st.session_state.get('chunk_bytes', [])):
+                                    st.download_button(
+                                        label=f"📥 मूल PDF भाग {i + 1}",
+                                        data=st.session_state['chunk_bytes'][i],
+                                        file_name=f"chunk_{i:03d}.pdf",
+                                        mime="application/pdf",
+                                        key=f"dl_orig_{i}"
+                                    )
+                                elif not st.session_state.is_pdf and st.session_state.get('audio_bytes'):
+                                    st.download_button(
+                                        label=f"📥 मूल Audio",
+                                        data=st.session_state['audio_bytes'],
+                                        file_name="audio_original.mp3",
+                                        mime="audio/mpeg",
+                                        key=f"dl_orig_{i}"
+                                    )
+                            with dl_col2:
+                                st.download_button(
+                                    label=f"📄 Output भाग {i + 1}",
+                                    data=result,
+                                    file_name=f"chunk_{i:03d}_output.txt",
+                                    mime="text/plain",
+                                    key=f"dl_out_{i}"
+                                )
 
             # --- Error display with resume + partial download ---
             if st.session_state.processing_error:
@@ -375,17 +405,26 @@ if api_key:
 
         # ====== TAB 2: Resume from Folder ======
         with tab2:
-            folder_path = st.text_input("फोल्डर पथ दर्ज करें (Folder Path)", placeholder="C:\\Users\\...\\jain_XXXX")
+            folder_path = st.text_input("फोल्डर पथ दर्ज करें (Folder Path)",
+                                        value=st.session_state.get('tab2_folder_path', ''),
+                                        placeholder="C:\\Users\\...\\jain_XXXX")
 
             if folder_path and os.path.isdir(folder_path):
-                # Scan for chunk PDFs and TXTs
-                pdf_files = sorted([f for f in os.listdir(folder_path) if f.startswith('chunk_') and f.endswith('.pdf')])
-                txt_files = {f.replace('.txt', ''): f for f in os.listdir(folder_path) if f.startswith('chunk_') and f.endswith('.txt')}
+                # Scan for chunk source files (PDF or audio) and TXTs
+                AUDIO_EXTS = ('.mp3', '.m4a', '.wav', '.ogg')
+                source_files = sorted([f for f in os.listdir(folder_path)
+                                       if f.startswith('chunk_') and (f.endswith('.pdf') or f.endswith(AUDIO_EXTS))])
+                txt_files = {f.replace('.txt', ''): f for f in os.listdir(folder_path)
+                             if f.startswith('chunk_') and f.endswith('.txt')}
 
-                if not pdf_files:
-                    st.warning("इस फोल्डर में कोई PDF chunk नहीं मिला।")
+                if not source_files:
+                    st.warning("इस फोल्डर में कोई chunk (PDF/Audio) नहीं मिला।")
                 else:
-                    st.success(f"{len(pdf_files)} PDF chunks मिले, {len(txt_files)} पहले से प्रोसेस हो चुके हैं।")
+                    # Detect type from first file
+                    first_ext = os.path.splitext(source_files[0])[1].lower()
+                    is_pdf_folder = first_ext == '.pdf'
+                    folder_type = "PDF" if is_pdf_folder else "Audio"
+                    st.success(f"{len(source_files)} {folder_type} chunks मिले, {len(txt_files)} पहले से प्रोसेस हो चुके हैं।")
 
                     # Initialize regen state
                     if 'regen_active' not in st.session_state:
@@ -393,15 +432,16 @@ if api_key:
                     if 'regen_index' not in st.session_state:
                         st.session_state['regen_index'] = -1
 
-                    for pdf_file in pdf_files:
-                        chunk_stem = pdf_file.replace('.pdf', '')  # e.g. chunk_000
+                    for src_file in source_files:
+                        stem, ext = os.path.splitext(src_file)
+                        chunk_stem = stem  # e.g. chunk_000
                         idx = int(chunk_stem.split('_')[1])
                         has_output = chunk_stem in txt_files
 
-                        col_name, col_status, col_action, col_view = st.columns([3, 2, 1, 2])
+                        col_name, col_status, col_action, col_dl, col_view = st.columns([3, 2, 1, 2, 2])
 
                         with col_name:
-                            st.write(f"**{chunk_stem}**")
+                            st.write(f"**{chunk_stem}** ({ext})")
 
                         with col_status:
                             if has_output:
@@ -414,7 +454,24 @@ if api_key:
                                 st.session_state['regen_active'] = True
                                 st.session_state['regen_index'] = idx
                                 st.session_state['regen_folder'] = folder_path
+                                st.session_state['regen_is_pdf'] = is_pdf_folder
+                                st.session_state['regen_ext'] = ext
                                 st.rerun()
+
+                        with col_dl:
+                            # Download original chunk
+                            src_path = os.path.join(folder_path, src_file)
+                            with open(src_path, 'rb') as sf:
+                                src_data = sf.read()
+                            mime_map = {'.pdf': 'application/pdf', '.mp3': 'audio/mpeg',
+                                        '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.ogg': 'audio/ogg'}
+                            st.download_button(
+                                label=f"📥 मूल",
+                                data=src_data,
+                                file_name=src_file,
+                                mime=mime_map.get(ext, 'application/octet-stream'),
+                                key=f"dl_src_{idx}"
+                            )
 
                         with col_view:
                             if has_output:
@@ -423,13 +480,20 @@ if api_key:
                                     content = rf.read()
                                 with st.popover("👁 देखें"):
                                     st.text_area("", content, height=300, key=f"view_{idx}", label_visibility="collapsed")
+                                st.download_button(
+                                    label=f"📄 Output",
+                                    data=content,
+                                    file_name=f"{chunk_stem}_output.txt",
+                                    mime="text/plain",
+                                    key=f"dl_out_t2_{idx}"
+                                )
 
                     st.divider()
 
                     # Download all completed outputs combined
                     all_texts = []
-                    for pdf_file in pdf_files:
-                        chunk_stem = pdf_file.replace('.pdf', '')
+                    for src_file in source_files:
+                        chunk_stem = os.path.splitext(src_file)[0]
                         if chunk_stem in txt_files:
                             txt_path = os.path.join(folder_path, txt_files[chunk_stem])
                             with open(txt_path, 'r', encoding='utf-8') as rf:
@@ -466,14 +530,20 @@ if api_key:
                     if st.session_state.get('regen_active'):
                         regen_idx = st.session_state['regen_index']
                         regen_folder = st.session_state['regen_folder']
-                        pdf_path = os.path.join(regen_folder, f"chunk_{regen_idx:03d}.pdf")
+                        regen_is_pdf = st.session_state.get('regen_is_pdf', True)
+                        regen_ext = st.session_state.get('regen_ext', '.pdf')
+                        src_path = os.path.join(regen_folder, f"chunk_{regen_idx:03d}{regen_ext}")
+
+                        mime_map = {'.pdf': 'application/pdf', '.mp3': 'audio/mpeg',
+                                    '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.ogg': 'audio/ogg'}
 
                         with st.status(f"भाग {regen_idx + 1} पुनः प्रोसेस हो रहा है...", expanded=True):
                             try:
-                                with open(pdf_path, 'rb') as pf:
+                                with open(src_path, 'rb') as pf:
                                     chunk_data = pf.read()
-                                text = process_chunk(client, chunk_data, regen_idx, len(pdf_files),
-                                                     True, regen_folder)
+                                text = process_chunk(client, chunk_data, regen_idx, len(source_files),
+                                                     regen_is_pdf, regen_folder,
+                                                     mime_type=None if regen_is_pdf else mime_map.get(regen_ext, 'audio/mpeg'))
                                 st.session_state['regen_active'] = False
                                 st.session_state['regen_index'] = -1
                                 st.success(f"भाग {regen_idx + 1} सफलतापूर्वक पुनः प्रोसेस हो गया!")
@@ -485,15 +555,34 @@ if api_key:
             elif folder_path:
                 st.error("यह फोल्डर मौजूद नहीं है। कृपया सही पथ दर्ज करें।")
 
-        # ====== TAB 3: YouTube ======
+        # ====== TAB 3: Audio / YouTube ======
         with tab3:
+            st.markdown("""### YouTube/ऑडियो फाइल कैसे प्राप्त करें?
+
+**विकल्प 1:** यदि आपके पास पहले से ऑडियो फाइल (MP3/M4A) है, तो सीधे नीचे अपलोड करें।
+
+**विकल्प 2:** YouTube से ऑडियो डाउनलोड करने के लिए:
+1. [y2mate.guru](https://www.y2mate.guru/) या [ssyoutube.com](https://ssyoutube.com/) पर जाएं
+2. YouTube वीडियो का URL पेस्ट करें
+3. **MP3/Audio** फॉर्मेट चुनें और डाउनलोड करें
+4. डाउनलोड की गई फाइल नीचे अपलोड करें
+
+**विकल्प 3:** ब्राउज़र एक्सटेंशन जैसे **Video DownloadHelper** (Firefox/Chrome) से भी डाउनलोड कर सकते हैं।
+""")
+            st.divider()
+
             # Check for ffmpeg availability
             ffmpeg_available = shutil.which("ffmpeg") is not None
 
-            yt_url = st.text_input("YouTube URL दर्ज करें", placeholder="https://www.youtube.com/watch?v=...")
+            if not ffmpeg_available:
+                st.warning("ffmpeg इंस्टॉल नहीं मिला। लंबी ऑडियो फाइलें बिना chunking के प्रोसेस होंगी।")
 
-            if yt_url:
-                # Initialize YouTube session state
+            audio_file = st.file_uploader("ऑडियो फाइल अपलोड करें (MP3, M4A, WAV, OGG)", type=['mp3', 'm4a', 'wav', 'ogg'], key="yt_audio_upload")
+
+            if audio_file:
+                st.success(f"ऑडियो फाइल तैयार है: {audio_file.name}")
+
+                # Initialize YouTube/audio session state
                 for k, v in {
                     'yt_processing_active': False,
                     'yt_chunk_results': [],
@@ -507,72 +596,41 @@ if api_key:
                     if k not in st.session_state:
                         st.session_state[k] = v
 
-                if st.button("डाउनलोड और प्रोसेस करें"):
-                    if not ffmpeg_available:
-                        st.error("ffmpeg इंस्टॉल नहीं मिला। YouTube audio chunking के लिए ffmpeg आवश्यक है। कृपया ffmpeg इंस्टॉल करें: https://ffmpeg.org/download.html")
-                    else:
-                        try:
-                            import yt_dlp
-                        except ImportError:
-                            st.error("yt-dlp इंस्टॉल नहीं है। कृपया चलाएँ: `pip install yt-dlp`")
-                            st.stop()
+                if st.button("प्रोसेस शुरू करें (Audio)"):
+                    yt_temp = tempfile.mkdtemp(prefix='jain_yt_')
+                    st.session_state['yt_temp_dir'] = yt_temp
 
-                        try:
-                            from pydub import AudioSegment
-                        except ImportError:
-                            st.error("pydub इंस्टॉल नहीं है। कृपया चलाएँ: `pip install pydub`")
-                            st.stop()
+                    audio_bytes = audio_file.read()
 
-                        # Create temp dir
-                        yt_temp = tempfile.mkdtemp(prefix='jain_yt_')
-                        st.session_state['yt_temp_dir'] = yt_temp
+                    # Determine mime type from extension
+                    ext = audio_file.name.rsplit('.', 1)[-1].lower()
+                    mime_map = {'mp3': 'audio/mpeg', 'm4a': 'audio/mp4', 'wav': 'audio/wav', 'ogg': 'audio/ogg'}
+                    audio_mime = mime_map.get(ext, 'audio/mpeg')
 
-                        with st.status("YouTube से ऑडियो डाउनलोड हो रहा है...", expanded=True):
+                    if ffmpeg_available:
+                        with st.status("ऑडियो को 30 मिनट के भागों में विभाजित किया जा रहा है...", expanded=True):
                             try:
-                                audio_path = os.path.join(yt_temp, "youtube_audio")
-                                ydl_opts = {
-                                    'format': 'bestaudio[ext=m4a]/bestaudio',
-                                    'outtmpl': audio_path + '.%(ext)s',
-                                    'quiet': True,
-                                    'no_warnings': True,
-                                }
-                                st.write("डाउनलोड शुरू...")
-                                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                    info = ydl.extract_info(yt_url, download=True)
-                                    title = info.get('title', 'Unknown')
-                                    duration = info.get('duration', 0)
+                                from pydub import AudioSegment
 
-                                st.write(f"शीर्षक: {title}")
-                                st.write(f"अवधि: {duration // 60} मिनट {duration % 60} सेकंड")
+                                # Save uploaded file to disk for pydub
+                                src_path = os.path.join(yt_temp, f"source.{ext}")
+                                with open(src_path, 'wb') as sf:
+                                    sf.write(audio_bytes)
 
-                                # Find the downloaded file
-                                downloaded = None
-                                for f in os.listdir(yt_temp):
-                                    if f.startswith("youtube_audio") and not f.endswith('.txt'):
-                                        downloaded = os.path.join(yt_temp, f)
-                                        break
-
-                                if not downloaded:
-                                    raise Exception("डाउनलोड की गई फाइल नहीं मिली")
-
-                                # Split into 30-min chunks
-                                st.write("ऑडियो को 30 मिनट के भागों में विभाजित किया जा रहा है...")
-                                audio = AudioSegment.from_file(downloaded)
+                                audio_seg = AudioSegment.from_file(src_path)
                                 chunk_duration_ms = 30 * 60 * 1000  # 30 minutes
                                 chunks = []
-                                for i in range(0, len(audio), chunk_duration_ms):
-                                    chunk = audio[i:i + chunk_duration_ms]
-                                    chunk_path = os.path.join(yt_temp, f"chunk_{len(chunks):03d}.m4a")
-                                    chunk.export(chunk_path, format="ipod")  # ipod = m4a/aac
+                                chunk_bytes_list = []
+
+                                for i in range(0, len(audio_seg), chunk_duration_ms):
+                                    chunk = audio_seg[i:i + chunk_duration_ms]
+                                    chunk_path = os.path.join(yt_temp, f"chunk_{len(chunks):03d}.{ext}")
+                                    chunk.export(chunk_path, format="ipod" if ext == "m4a" else ext)
+                                    with open(chunk_path, 'rb') as cf:
+                                        chunk_bytes_list.append(cf.read())
                                     chunks.append(chunk_path)
 
                                 st.write(f"{len(chunks)} भाग बनाए गए")
-
-                                # Read chunk bytes into session state
-                                chunk_bytes_list = []
-                                for cp in chunks:
-                                    with open(cp, 'rb') as cf:
-                                        chunk_bytes_list.append(cf.read())
 
                                 st.session_state.update({
                                     'yt_processing_active': True,
@@ -582,16 +640,33 @@ if api_key:
                                     'yt_processing_error': None,
                                     'yt_processing_complete': False,
                                     'yt_chunk_files': chunk_bytes_list,
+                                    'yt_audio_mime': audio_mime,
                                 })
-
                                 st.rerun()
 
                             except Exception as e:
-                                st.error(f"YouTube डाउनलोड त्रुटि: {e}")
+                                st.error(f"ऑडियो chunking त्रुटि: {e}")
+                    else:
+                        # No ffmpeg — process as single chunk
+                        st.session_state.update({
+                            'yt_processing_active': True,
+                            'yt_chunk_results': [None],
+                            'yt_chunk_count': 1,
+                            'yt_current_chunk_index': 0,
+                            'yt_processing_error': None,
+                            'yt_processing_complete': False,
+                            'yt_chunk_files': [audio_bytes],
+                            'yt_audio_mime': audio_mime,
+                        })
+                        st.session_state['yt_temp_dir'] = yt_temp
+                        st.rerun()
 
             # Show temp dir path
             if st.session_state.get('yt_temp_dir'):
                 st.info(f"फाइलें यहाँ सहेजी गई हैं: {st.session_state['yt_temp_dir']}")
+                if st.button("📂 इस फोल्डर को 'फोल्डर से पुनः शुरू करें' टैब में खोलें", key="tab3_to_tab2"):
+                    st.session_state['tab2_folder_path'] = st.session_state['yt_temp_dir']
+                    st.rerun()
 
             # --- Incremental results display ---
             yt_done = [r for r in st.session_state.get('yt_chunk_results', []) if r is not None]
@@ -603,6 +678,24 @@ if api_key:
                         with st.expander(label, expanded=(i == len(yt_done) - 1)):
                             st.text_area("", result, height=300,
                                          key=f"yt_chunk_out_{i}", label_visibility="collapsed")
+                            dl_col1, dl_col2 = st.columns(2)
+                            with dl_col1:
+                                if i < len(st.session_state.get('yt_chunk_files', [])):
+                                    st.download_button(
+                                        label=f"📥 मूल Audio भाग {i + 1}",
+                                        data=st.session_state['yt_chunk_files'][i],
+                                        file_name=f"chunk_{i:03d}.m4a",
+                                        mime=st.session_state.get('yt_audio_mime', 'audio/mpeg'),
+                                        key=f"yt_dl_orig_{i}"
+                                    )
+                            with dl_col2:
+                                st.download_button(
+                                    label=f"📄 Output भाग {i + 1}",
+                                    data=result,
+                                    file_name=f"chunk_{i:03d}_output.txt",
+                                    mime="text/plain",
+                                    key=f"yt_dl_out_{i}"
+                                )
 
             # --- Error display with resume/skip ---
             if st.session_state.get('yt_processing_error'):
@@ -640,7 +733,7 @@ if api_key:
                             chunk_data = st.session_state['yt_chunk_files'][idx]
                             text = process_chunk(client, chunk_data, idx, total,
                                                  False, st.session_state['yt_temp_dir'],
-                                                 mime_type="audio/mp4")
+                                                 mime_type=st.session_state.get('yt_audio_mime', 'audio/mpeg'))
 
                             st.session_state['yt_chunk_results'][idx] = text
                             st.session_state['yt_current_chunk_index'] = idx + 1
