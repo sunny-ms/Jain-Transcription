@@ -3,3 +3,5 @@ google-genai
 google-generativeai
 python-docx
 pypdf
+yt-dlp
+pydub

@@ -4,6 +4,7 @@ import io
 import tempfile
 import os
 import traceback
+import shutil
 from docx import Document
 from pypdf import PdfReader, PdfWriter
 
@@ -123,7 +124,7 @@ if api_key:
                 st.session_state[k] = v
 
         # --- Helper: process a single chunk via Gemini ---
-        def process_chunk(client, chunk_bytes, idx, total, is_pdf, temp_dir):
+        def process_chunk(client, chunk_bytes, idx, total, is_pdf, temp_dir, mime_type=None):
             """Upload a chunk to Gemini, get transcription, save to disk. Returns text."""
             if is_pdf:
                 upload_source = io.BytesIO(chunk_bytes)
@@ -131,7 +132,7 @@ if api_key:
                 prompt = PDF_PROMPT + f"\n8. CHUNK INFO: This is part {idx + 1} of {total}. Transcribe all content in this chunk."
             else:
                 upload_source = io.BytesIO(chunk_bytes)
-                m_type = "audio/mpeg"
+                m_type = mime_type or "audio/mpeg"
                 prompt = AUDIO_PROMPT
 
             st.write("Gemini पर अपलोड हो रहा है...")
@@ -190,7 +191,7 @@ if api_key:
 
             return text
 
-        tab1, tab2 = st.tabs(["📤 नई फाइल अपलोड करें", "📂 फोल्डर से पुनः शुरू करें"])
+        tab1, tab2, tab3 = st.tabs(["📤 नई फाइल अपलोड करें", "📂 फोल्डर से पुनः शुरू करें", "🎬 YouTube"])
 
         # ====== TAB 1: Upload New ======
         with tab1:
@@ -483,6 +484,214 @@ if api_key:
 
             elif folder_path:
                 st.error("यह फोल्डर मौजूद नहीं है। कृपया सही पथ दर्ज करें।")
+
+        # ====== TAB 3: YouTube ======
+        with tab3:
+            # Check for ffmpeg availability
+            ffmpeg_available = shutil.which("ffmpeg") is not None
+
+            yt_url = st.text_input("YouTube URL दर्ज करें", placeholder="https://www.youtube.com/watch?v=...")
+
+            if yt_url:
+                # Initialize YouTube session state
+                for k, v in {
+                    'yt_processing_active': False,
+                    'yt_chunk_results': [],
+                    'yt_chunk_count': 0,
+                    'yt_current_chunk_index': 0,
+                    'yt_processing_error': None,
+                    'yt_processing_complete': False,
+                    'yt_temp_dir': None,
+                    'yt_chunk_files': [],
+                }.items():
+                    if k not in st.session_state:
+                        st.session_state[k] = v
+
+                if st.button("डाउनलोड और प्रोसेस करें"):
+                    if not ffmpeg_available:
+                        st.error("ffmpeg इंस्टॉल नहीं मिला। YouTube audio chunking के लिए ffmpeg आवश्यक है। कृपया ffmpeg इंस्टॉल करें: https://ffmpeg.org/download.html")
+                    else:
+                        try:
+                            import yt_dlp
+                        except ImportError:
+                            st.error("yt-dlp इंस्टॉल नहीं है। कृपया चलाएँ: `pip install yt-dlp`")
+                            st.stop()
+
+                        try:
+                            from pydub import AudioSegment
+                        except ImportError:
+                            st.error("pydub इंस्टॉल नहीं है। कृपया चलाएँ: `pip install pydub`")
+                            st.stop()
+
+                        # Create temp dir
+                        yt_temp = tempfile.mkdtemp(prefix='jain_yt_')
+                        st.session_state['yt_temp_dir'] = yt_temp
+
+                        with st.status("YouTube से ऑडियो डाउनलोड हो रहा है...", expanded=True):
+                            try:
+                                audio_path = os.path.join(yt_temp, "youtube_audio")
+                                ydl_opts = {
+                                    'format': 'bestaudio[ext=m4a]/bestaudio',
+                                    'outtmpl': audio_path + '.%(ext)s',
+                                    'quiet': True,
+                                    'no_warnings': True,
+                                }
+                                st.write("डाउनलोड शुरू...")
+                                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                    info = ydl.extract_info(yt_url, download=True)
+                                    title = info.get('title', 'Unknown')
+                                    duration = info.get('duration', 0)
+
+                                st.write(f"शीर्षक: {title}")
+                                st.write(f"अवधि: {duration // 60} मिनट {duration % 60} सेकंड")
+
+                                # Find the downloaded file
+                                downloaded = None
+                                for f in os.listdir(yt_temp):
+                                    if f.startswith("youtube_audio") and not f.endswith('.txt'):
+                                        downloaded = os.path.join(yt_temp, f)
+                                        break
+
+                                if not downloaded:
+                                    raise Exception("डाउनलोड की गई फाइल नहीं मिली")
+
+                                # Split into 30-min chunks
+                                st.write("ऑडियो को 30 मिनट के भागों में विभाजित किया जा रहा है...")
+                                audio = AudioSegment.from_file(downloaded)
+                                chunk_duration_ms = 30 * 60 * 1000  # 30 minutes
+                                chunks = []
+                                for i in range(0, len(audio), chunk_duration_ms):
+                                    chunk = audio[i:i + chunk_duration_ms]
+                                    chunk_path = os.path.join(yt_temp, f"chunk_{len(chunks):03d}.m4a")
+                                    chunk.export(chunk_path, format="ipod")  # ipod = m4a/aac
+                                    chunks.append(chunk_path)
+
+                                st.write(f"{len(chunks)} भाग बनाए गए")
+
+                                # Read chunk bytes into session state
+                                chunk_bytes_list = []
+                                for cp in chunks:
+                                    with open(cp, 'rb') as cf:
+                                        chunk_bytes_list.append(cf.read())
+
+                                st.session_state.update({
+                                    'yt_processing_active': True,
+                                    'yt_chunk_results': [None] * len(chunks),
+                                    'yt_chunk_count': len(chunks),
+                                    'yt_current_chunk_index': 0,
+                                    'yt_processing_error': None,
+                                    'yt_processing_complete': False,
+                                    'yt_chunk_files': chunk_bytes_list,
+                                })
+
+                                st.rerun()
+
+                            except Exception as e:
+                                st.error(f"YouTube डाउनलोड त्रुटि: {e}")
+
+            # Show temp dir path
+            if st.session_state.get('yt_temp_dir'):
+                st.info(f"फाइलें यहाँ सहेजी गई हैं: {st.session_state['yt_temp_dir']}")
+
+            # --- Incremental results display ---
+            yt_done = [r for r in st.session_state.get('yt_chunk_results', []) if r is not None]
+            if yt_done:
+                st.subheader("निकाल गया टेक्स्ट (Result):")
+                for i, result in enumerate(st.session_state['yt_chunk_results']):
+                    if result is not None:
+                        label = f"भाग {i + 1}" if st.session_state['yt_chunk_count'] > 1 else "परिणाम"
+                        with st.expander(label, expanded=(i == len(yt_done) - 1)):
+                            st.text_area("", result, height=300,
+                                         key=f"yt_chunk_out_{i}", label_visibility="collapsed")
+
+            # --- Error display with resume/skip ---
+            if st.session_state.get('yt_processing_error'):
+                failed_idx = st.session_state['yt_current_chunk_index']
+                st.error(f"भाग {failed_idx + 1} पर त्रुटि: {st.session_state['yt_processing_error']}")
+
+                col_resume, col_skip = st.columns(2)
+                with col_resume:
+                    if st.button(f"भाग {failed_idx + 1} से पुनः शुरू करें", key="yt_resume"):
+                        st.session_state['yt_processing_error'] = None
+                        st.session_state['yt_processing_active'] = True
+                        st.rerun()
+                with col_skip:
+                    if st.button(f"भाग {failed_idx + 1} छोड़ें", key="yt_skip"):
+                        st.session_state['yt_processing_error'] = None
+                        st.session_state['yt_chunk_results'][failed_idx] = "[यह भाग छोड़ा गया (skipped)]"
+                        st.session_state['yt_current_chunk_index'] = failed_idx + 1
+                        if failed_idx + 1 >= st.session_state['yt_chunk_count']:
+                            st.session_state['yt_processing_complete'] = True
+                        else:
+                            st.session_state['yt_processing_active'] = True
+                        st.rerun()
+
+            # --- Processing loop ---
+            if st.session_state.get('yt_processing_active'):
+                idx = st.session_state['yt_current_chunk_index']
+                total = st.session_state['yt_chunk_count']
+
+                st.progress(idx / total if total > 0 else 0,
+                            text=f"प्रोसेसिंग: {idx}/{total} भाग पूर्ण")
+
+                if idx < total:
+                    with st.status(f"भाग {idx + 1}/{total} प्रोसेस हो रहा है...", expanded=True):
+                        try:
+                            chunk_data = st.session_state['yt_chunk_files'][idx]
+                            text = process_chunk(client, chunk_data, idx, total,
+                                                 False, st.session_state['yt_temp_dir'],
+                                                 mime_type="audio/mp4")
+
+                            st.session_state['yt_chunk_results'][idx] = text
+                            st.session_state['yt_current_chunk_index'] = idx + 1
+
+                        except Exception as e:
+                            full_trace = traceback.format_exc()
+                            log_error(st.session_state['yt_temp_dir'], idx, str(e), full_trace)
+                            st.session_state['yt_processing_error'] = str(e)
+                            st.session_state['yt_processing_active'] = False
+                            st.rerun()
+
+                    if st.session_state['yt_current_chunk_index'] >= total:
+                        st.session_state['yt_processing_active'] = False
+                        st.session_state['yt_processing_complete'] = True
+
+                    st.rerun()
+
+            # --- Final combined download ---
+            if st.session_state.get('yt_processing_complete'):
+                full_text = "\n\n---\n\n".join(
+                    r for r in st.session_state['yt_chunk_results'] if r is not None
+                )
+
+                st.subheader("पूर्ण परिणाम (Complete Result):")
+                st.text_area("Final Transcript->", full_text, height=500, key="yt_final")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="📄 Text (.txt) डाउनलोड करें",
+                        data=full_text,
+                        file_name=f"Jain_YT_Output_{int(time.time())}.txt",
+                        mime="text/plain",
+                        key="yt_dl_txt"
+                    )
+                with col2:
+                    doc = Document()
+                    for r in st.session_state['yt_chunk_results']:
+                        if r:
+                            doc.add_paragraph(r)
+                            doc.add_paragraph()
+                    docx_buffer = io.BytesIO()
+                    doc.save(docx_buffer)
+                    docx_buffer.seek(0)
+                    st.download_button(
+                        label="📋 Word (.docx) डाउनलोड करें",
+                        data=docx_buffer.getvalue(),
+                        file_name=f"Jain_YT_Output_{int(time.time())}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="yt_dl_docx"
+                    )
 
 else:
     st.warning("ऐप चलाने के लिए कृपया साइडबार में API Key डालें।")
