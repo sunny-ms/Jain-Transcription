@@ -32,6 +32,23 @@ Instructions:
 
 Expected Output: A clean, well-structured document in Unicode Hindi (Devanagari)."""
 
+TIMESTAMP_PROMPT_TEMPLATE = """
+Additional Formatting Instructions:
+- Start the transcription with a header block between --- markers as shown below:
+---
+source_type: {source_type}
+{metadata_fields}
+---
+
+- Each text segment must begin with a timestamp in [HH:MM:SS] format based on when it occurs in the audio.
+- Separate segments with a blank line.
+- Example:
+
+[00:00:00] पहला वाक्य यहाँ लिखें।
+
+[00:01:30] अगला वाक्य यहाँ लिखें।
+"""
+
 PDF_PROMPT = """Role: You are an expert Hindi archivist.
 
 Task: Transcribe every word from the attached PDF with 100% accuracy.
@@ -124,7 +141,7 @@ if api_key:
                 st.session_state[k] = v
 
         # --- Helper: process a single chunk via Gemini ---
-        def process_chunk(client, chunk_bytes, idx, total, is_pdf, temp_dir, mime_type=None):
+        def process_chunk(client, chunk_bytes, idx, total, is_pdf, temp_dir, mime_type=None, extra_prompt=""):
             """Upload a chunk to Gemini, get transcription, save to disk. Returns text."""
             if is_pdf:
                 upload_source = io.BytesIO(chunk_bytes)
@@ -133,7 +150,7 @@ if api_key:
             else:
                 upload_source = io.BytesIO(chunk_bytes)
                 m_type = mime_type or "audio/mpeg"
-                prompt = AUDIO_PROMPT
+                prompt = AUDIO_PROMPT + extra_prompt
 
             st.write("Gemini पर अपलोड हो रहा है...")
             sample_file = client.files.upload(file=upload_source, config={'mime_type': m_type})
@@ -579,6 +596,22 @@ if api_key:
 
             audio_file = st.file_uploader("ऑडियो फाइल अपलोड करें (MP3, M4A, WAV, OGG)", type=['mp3', 'm4a', 'wav', 'ogg'], key="yt_audio_upload")
 
+            # Timestamp formatting option
+            enable_timestamps = st.toggle("Timestamp format सक्षम करें", value=False, key="enable_timestamps",
+                                          help="Output में [HH:MM:SS] timestamp और header block जोड़ें")
+
+            yt_url_meta = ""
+            yt_title_meta = ""
+            source_type_meta = "audio"
+            if enable_timestamps:
+                st.markdown("**मेटाडेटा (वैकल्पिक):**")
+                meta_col1, meta_col2 = st.columns(2)
+                with meta_col1:
+                    source_type_meta = st.selectbox("Source Type", ["youtube", "audio", "pravachan"], key="source_type_meta")
+                    yt_url_meta = st.text_input("YouTube URL (वैकल्पिक)", placeholder="https://www.youtube.com/watch?v=...", key="yt_url_meta")
+                with meta_col2:
+                    yt_title_meta = st.text_input("शीर्षक / Title (वैकल्पिक)", placeholder="प्रवचन का नाम", key="yt_title_meta")
+
             if audio_file:
                 st.success(f"ऑडियो फाइल तैयार है: {audio_file.name}")
 
@@ -599,6 +632,20 @@ if api_key:
                 if st.button("प्रोसेस शुरू करें (Audio)"):
                     yt_temp = tempfile.mkdtemp(prefix='jain_yt_')
                     st.session_state['yt_temp_dir'] = yt_temp
+
+                    # Build timestamp prompt if enabled
+                    ts_prompt = ""
+                    if enable_timestamps:
+                        meta_lines = []
+                        if yt_url_meta:
+                            meta_lines.append(f"youtube_url: {yt_url_meta}")
+                        if yt_title_meta:
+                            meta_lines.append(f"title: {yt_title_meta}")
+                        ts_prompt = TIMESTAMP_PROMPT_TEMPLATE.format(
+                            source_type=source_type_meta,
+                            metadata_fields="\n".join(meta_lines)
+                        )
+                    st.session_state['yt_timestamp_prompt'] = ts_prompt
 
                     audio_bytes = audio_file.read()
 
@@ -733,7 +780,8 @@ if api_key:
                             chunk_data = st.session_state['yt_chunk_files'][idx]
                             text = process_chunk(client, chunk_data, idx, total,
                                                  False, st.session_state['yt_temp_dir'],
-                                                 mime_type=st.session_state.get('yt_audio_mime', 'audio/mpeg'))
+                                                 mime_type=st.session_state.get('yt_audio_mime', 'audio/mpeg'),
+                                                 extra_prompt=st.session_state.get('yt_timestamp_prompt', ''))
 
                             st.session_state['yt_chunk_results'][idx] = text
                             st.session_state['yt_current_chunk_index'] = idx + 1
