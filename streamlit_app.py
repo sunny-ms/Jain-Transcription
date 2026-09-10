@@ -110,6 +110,27 @@ with st.sidebar:
         min_value=1, max_value=100, value=15, step=1,
         help="Large PDFs will be split into parts of this many pages"
     )
+    model_options = [
+        "gemini-3.5-flash",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-2.5-flash",
+        "Custom...",
+    ]
+    model_choice = st.selectbox(
+        "Gemini Model",
+        model_options,
+        index=0,
+        help="Select a preset or choose Custom... to type any model name"
+    )
+    if model_choice == "Custom...":
+        model_name = st.text_input(
+            "Custom model name",
+            value="gemini-3.5-flash",
+            help="e.g. gemini-3.8-pro, gemini-3.8-flash-lite"
+        ).strip() or "gemini-3.5-flash"
+    else:
+        model_name = model_choice
 
 # --- Logic ---
 if api_key:
@@ -172,9 +193,8 @@ if api_key:
             for attempt in range(1, max_retries + 1):
                 try:
                     response = client.models.generate_content(
-                        model='models/gemini-2.5-flash',
-                        contents=[f_info, prompt],
-                        config={'temperature': 0.1}
+                        model=model_name,
+                        contents=[f_info, prompt]
                     )
                     break
                 except Exception as gen_err:
